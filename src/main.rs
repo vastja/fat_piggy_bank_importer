@@ -1,8 +1,9 @@
-use rusqlite::Connection;
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection};
 
 fn main() {
     let expenses = vec![Expense {
-        date: String::from("17-5-2025"),
+        date: "1995-05-17T00:00:00Z".parse().unwrap(),
         tag: String::from("Present"),
         amount: 100,
     }];
@@ -11,11 +12,11 @@ fn main() {
 
     connection
         .execute(
-            "CREATE TABLE expenses (
+            "CREATE TABLE IF NOT EXISTS expenses (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date DATE,
+                    date TEXT NOT NULL,
                     tag TEXT NOT NULL,
-                    amount INTEGER
+                    amount INTEGER NOT NULL
                 )",
             (), // empty list of parameters.
         )
@@ -25,8 +26,8 @@ fn main() {
         connection
             .execute(
                 "INSERT INTO expenses (date, tag, amount) VALUES (?1, ?2, ?3)",
-                [
-                    expense.date.clone(),
+                params![
+                    expense.date,
                     expense.tag.clone(),
                     expense.amount.to_string(),
                 ],
@@ -36,7 +37,7 @@ fn main() {
 }
 
 struct Expense {
-    date: String,
+    date: DateTime<Utc>,
     tag: String,
     amount: i32,
 }
