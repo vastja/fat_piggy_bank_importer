@@ -2,33 +2,111 @@ use std::fs;
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use rusqlite::{params, Connection, Result};
-fn main() {
-    let connection = Connection::open("./fat_piggy_bank.db").expect("Database connection failed.");
 
-    connection
-        .execute(
-            "CREATE TABLE IF NOT EXISTS expenses (
+struct DbStorage {
+    con: Connection,
+}
+
+impl DbStorage {
+    pub fn new() -> Self {
+        let con = Connection::open("./fat_piggy_bank.db").expect("Database connection failed.");
+        let loc_self = DbStorage { con };
+        loc_self.create_expenses_table();
+        loc_self.create_tags_table();
+        loc_self
+    }
+
+    fn create_expenses_table(&self) {
+        self.con
+            .execute(
+                "CREATE TABLE IF NOT EXISTS expenses (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     date TEXT NOT NULL,
                     tag_id INTEGER NOT NULL,
                     amount INTEGER NOT NULL,
                     FOREIGN KEY (tag_id) REFERENCES tags(id)
                 )",
-            (), // empty list of parameters.
-        )
-        .expect("Expenses table creation failed.");
+                (), // empty list of parameters.
+            )
+            .expect("Expenses table creation failed.");
+    }
 
-    connection
-        .execute(
-            "CREATE TABLE IF NOT EXISTS tags (
+    fn create_tags_table(&self) {
+        self.con
+            .execute(
+                "CREATE TABLE IF NOT EXISTS tags (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 color TEXT NOT NULL
             )",
-            (),
-        )
-        .expect("Tags table creation failed.");
+                (),
+            )
+            .expect("Tags table creation failed.");
+    }
 
+    pub fn close(self) {
+        self.con.close().expect("Failed to close connection.");
+    }
+}
+
+impl Storage for DbStorage {
+    fn get_tags(&self) -> Result<Vec<StoredTag>> {
+        let mut select = self
+            .con
+            .prepare("SELECT * FROM tags")
+            .expect("Selecting tags failed.");
+
+        select
+            .query_map([], |row| {
+                Ok(StoredTag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    color: row.get(2)?,
+                })
+            })
+            .unwrap()
+            .collect()
+    }
+
+    fn save_tags(&self, tags: Vec<Tag>) {
+        for tag in tags {
+            self.con
+                .execute(
+                    "INSERT INTO tags (name, color) VALUES (?1, ?2)",
+                    params![tag.name, tag.color],
+                )
+                .expect("Table creation failed.");
+        }
+    }
+
+    fn save_expenses(&self, expenses: Vec<Expense>) {
+        let tags = self.get_tags().expect("Failed to retrieve tags.");
+        for expense in expenses {
+            self.con
+                .execute(
+                    "INSERT INTO expenses (date, tag_id, amount) VALUES (?1, ?2, ?3)",
+                    params![
+                        expense.date,
+                        tags.iter()
+                            .find(|x| x.name == expense.tag)
+                            .expect("Invalid expense tag name.")
+                            .id,
+                        expense.amount.to_string(),
+                    ],
+                )
+                .expect("Table creation failed.");
+        }
+    }
+}
+
+trait Storage {
+    fn get_tags(&self) -> Result<Vec<StoredTag>>;
+    fn save_tags(&self, tags: Vec<Tag>); // Todo: Return result
+    fn save_expenses(&self, expenses: Vec<Expense>); // Todo: Return result
+}
+
+fn main() {
+    let storage = DbStorage::new();
     let data = fs::read_to_string("../../Finance/06_2024_vydaje.csv").unwrap();
     let expenses: Vec<Expense> = data
         .lines()
@@ -44,27 +122,15 @@ fn main() {
         })
         .collect();
 
-    let mut tags_select = connection
-        .prepare("SELECT * FROM tags")
-        .expect("Selecting tags failed.");
-
-    let existing_tags: Vec<DbTag> = tags_select
-        .query_map([], |row| {
-            Ok(DbTag {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                color: row.get(2)?,
-            })
-        })
-        .unwrap()
-        .collect::<Result<Vec<DbTag>>>()
-        .expect("Failed to process existing tags.");
-
     let distinct = [
         "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6",
         "#bcf60c", "#fabebe", "#008080", "#e6beff", "#9a6324", "#fffac8", "#800000", "#aaffc3",
         "#808000", "#ffd8b1", "#000075", "#808080", "#ffffff", "#000000",
     ];
+
+    let existing_tags = storage
+        .get_tags()
+        .expect("Failed to retrieve existing tags.");
 
     // Todo: Handle if not enough colors
     let mut not_used_colors: Vec<String> = vec![];
@@ -75,13 +141,12 @@ fn main() {
     }
 
     let mut color_index = 0;
-    let mut new_tags: Vec<DbTag> = vec![];
+    let mut new_tags: Vec<Tag> = vec![];
     for expense in expenses.iter() {
         if !existing_tags.iter().any(|x| x.name == expense.tag)
             && !new_tags.iter().any(|x| x.name == expense.tag)
         {
-            new_tags.push(DbTag {
-                id: 0,
+            new_tags.push(Tag {
                 name: expense.tag.clone(),
                 color: not_used_colors[color_index].clone(),
             });
@@ -89,39 +154,11 @@ fn main() {
         }
     }
 
-    for tag in new_tags {
-        connection
-            .execute(
-                "INSERT INTO tags (name, color) VALUES (?1, ?2)",
-                params![tag.name, tag.color],
-            )
-            .expect("Table creation failed.");
-    }
+    storage.save_tags(new_tags);
 
-    let tags: Vec<DbTag> = tags_select
-        .query_map([], |row| {
-            Ok(DbTag {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                color: row.get(2)?,
-            })
-        })
-        .unwrap()
-        .collect::<Result<Vec<DbTag>>>()
-        .expect("Failed to process existing tags.");
+    storage.save_expenses(expenses);
 
-    for expense in expenses {
-        connection
-            .execute(
-                "INSERT INTO expenses (date, tag_id, amount) VALUES (?1, ?2, ?3)",
-                params![
-                    expense.date,
-                    tags.iter().find(|x| x.name == expense.tag).unwrap().id,
-                    expense.amount.to_string(),
-                ],
-            )
-            .expect("Table creation failed.");
-    }
+    storage.close();
 }
 
 struct Expense {
@@ -130,7 +167,12 @@ struct Expense {
     amount: i32,
 }
 
-struct DbTag {
+struct Tag {
+    name: String,
+    color: String,
+}
+
+struct StoredTag {
     id: u32,
     name: String,
     color: String,
